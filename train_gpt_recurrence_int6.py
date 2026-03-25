@@ -1,4 +1,4 @@
-~"""
+"""
 The `train_gpt.py` and `train_gpt_mlx.py` scripts are intended as good launching-off points for new participants, not SOTA configs. We'll accept PRs that tune, improve, or simplify these scripts without significantly increasing complexity, but competitive submissions should stay in the `/records` folder.
 
 Hard stop: To keep readable for newcomers, let's make sure `train_gpt.py` and `train_gpt_mlx.py` never are longer than 1500 lines.
@@ -166,6 +166,28 @@ class Muon(torch.optim.Optimizer):
                 curr += p.numel()
 
         return loss
+
+
+def maybe_compile(fn_or_module, **kwargs):
+    compile_fn = getattr(torch, "compile", None)
+    if compile_fn is None:
+        return fn_or_module
+    try:
+        return compile_fn(fn_or_module, **kwargs)
+    except Exception:
+        # Some cloud images pin older/partial torch builds where compile exists
+        # but fails at runtime for certain call patterns.
+        return fn_or_module
+
+
+def make_adam(param_groups, beta1: float, beta2: float, eps: float, use_fused: bool = True) -> torch.optim.Optimizer:
+    kwargs = dict(betas=(beta1, beta2), eps=eps)
+    if use_fused:
+        try:
+            return torch.optim.Adam(param_groups, fused=True, **kwargs)
+        except TypeError:
+            pass
+    return torch.optim.Adam(param_groups, **kwargs)
 
 
 # -----------------------------
@@ -733,7 +755,7 @@ def main() -> None:
 
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
-    zeropower_via_newtonschulz5 = torch.compile(zeropower_via_newtonschulz5)
+    zeropower_via_newtonschulz5 = maybe_compile(zeropower_via_newtonschulz5)
 
     # -----------------------------
     # DISTRIBUTED + CUDA SETUP
@@ -754,19 +776,26 @@ def main() -> None:
     device = torch.device("cuda", local_rank)
     torch.cuda.set_device(device)
     if distributed:
-        dist.init_process_group(backend="nccl", device_id=device)
+        try:
+            dist.init_process_group(backend="nccl", device_id=device)
+        except TypeError:
+            dist.init_process_group(backend="nccl")
         dist.barrier()
     master_process = rank == 0
 
     # Fast math knobs
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    from torch.backends.cuda import enable_cudnn_sdp, enable_flash_sdp, enable_math_sdp, enable_mem_efficient_sdp
+    try:
+        from torch.backends.cuda import enable_cudnn_sdp, enable_flash_sdp, enable_math_sdp, enable_mem_efficient_sdp
 
-    enable_cudnn_sdp(False)
-    enable_flash_sdp(True)
-    enable_mem_efficient_sdp(False)
-    enable_math_sdp(False)
+        enable_cudnn_sdp(False)
+        enable_flash_sdp(True)
+        enable_mem_efficient_sdp(False)
+        enable_math_sdp(False)
+    except Exception:
+        # Older torch builds may not expose the SDP backend toggles.
+        pass
 
     logfile = None
     if master_process:
@@ -840,7 +869,7 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
+    compiled_model = maybe_compile(base_model, dynamic=False, fullgraph=True)
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
     # Optimizer split:
@@ -862,11 +891,11 @@ def main() -> None:
     if base_model.skip_weights.numel() > 0:
         scalar_params.append(base_model.skip_weights)
     token_lr = args.tied_embed_lr if args.tie_embeddings else args.embed_lr
-    optimizer_tok = torch.optim.Adam(
+    optimizer_tok = make_adam(
         [{"params": [base_model.tok_emb.weight], "lr": token_lr, "base_lr": token_lr}],
-        betas=(args.beta1, args.beta2),
+        beta1=args.beta1,
+        beta2=args.beta2,
         eps=args.adam_eps,
-        fused=True,
     )
     optimizer_muon = Muon(
         matrix_params,
@@ -876,19 +905,19 @@ def main() -> None:
     )
     for group in optimizer_muon.param_groups:
         group["base_lr"] = args.matrix_lr
-    optimizer_scalar = torch.optim.Adam(
+    optimizer_scalar = make_adam(
         [{"params": scalar_params, "lr": args.scalar_lr, "base_lr": args.scalar_lr}],
-        betas=(args.beta1, args.beta2),
+        beta1=args.beta1,
+        beta2=args.beta2,
         eps=args.adam_eps,
-        fused=True,
     )
     optimizers: list[torch.optim.Optimizer] = [optimizer_tok, optimizer_muon, optimizer_scalar]
     if base_model.lm_head is not None:
-        optimizer_head = torch.optim.Adam(
+        optimizer_head = make_adam(
             [{"params": [base_model.lm_head.weight], "lr": args.head_lr, "base_lr": args.head_lr}],
-            betas=(args.beta1, args.beta2),
+            beta1=args.beta1,
+            beta2=args.beta2,
             eps=args.adam_eps,
-            fused=True,
         )
         optimizers.insert(1, optimizer_head)
 
