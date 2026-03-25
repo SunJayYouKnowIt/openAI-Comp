@@ -14,7 +14,7 @@ import pickle
 import sys
 import time
 import uuid
-import zlib
+import zli
 from collections.abc import Callable
 from pathlib import Path
 
