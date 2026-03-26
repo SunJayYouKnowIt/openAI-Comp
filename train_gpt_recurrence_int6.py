@@ -43,7 +43,7 @@ class Hyperparameters:
     val_files = os.path.join(data_path, "fineweb_val_*.bin")
     tokenizer_path = os.environ.get("TOKENIZER_PATH", "./data/tokenizers/fineweb_1024_bpe.model")
     run_id = os.environ.get("RUN_ID", str(uuid.uuid4()))
-    seed = int(os.environ.get("SEED", 1337))
+    seed = int(os.environ.get("SEED", 408))
 
     # Validation cadence and batch size. Validation always uses the full fineweb_val split.
     val_batch_size = int(os.environ.get("VAL_BATCH_SIZE", 524_288))
@@ -61,12 +61,12 @@ class Hyperparameters:
 
     # Model shape.
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
-    num_layers = int(os.environ.get("NUM_LAYERS", 7))
+    num_layers = int(os.environ.get("NUM_LAYERS", 13))
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 8))
     model_dim = int(os.environ.get("MODEL_DIM", 512))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
-    mlp_mult = int(os.environ.get("MLP_MULT", 3))
-    recurrence_steps = int(os.environ.get("RECURRENCE_STEPS", 3))
+    mlp_mult = int(os.environ.get("MLP_MULT", 4))
+    recurrence_steps = int(os.environ.get("RECURRENCE_STEPS", 2))
     use_smeargate = bool(int(os.environ.get("USE_SMEARGATE", "1")))
     smeargate_init = float(os.environ.get("SMEARGATE_INIT", 3.0))
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
@@ -680,8 +680,8 @@ class GPT(nn.Module):
         super().__init__()
         if logit_softcap <= 0.0:
             raise ValueError(f"logit_softcap must be positive, got {logit_softcap}")
-        if num_layers != 7:
-            raise ValueError(f"prelude-loop-coda architecture requires NUM_LAYERS=7, got {num_layers}")
+        if num_layers != 13:
+            raise ValueError(f"prelude-loop-coda architecture requires NUM_LAYERS=13, got {num_layers}")
         if recurrence_steps <= 0:
             raise ValueError(f"recurrence_steps must be positive, got {recurrence_steps}")
         self.tie_embeddings = tie_embeddings
@@ -692,7 +692,7 @@ class GPT(nn.Module):
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.smeargate = SmearGate(model_dim, init=smeargate_init) if self.use_smeargate else None
         self.num_prelude_layers = 2
-        self.num_loop_layers = 3
+        self.num_loop_layers = 9
         self.num_coda_layers = 2
         self.loop_start = self.num_prelude_layers
         self.coda_start = self.loop_start + self.num_loop_layers
@@ -942,7 +942,7 @@ def main() -> None:
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
     log0(
         f"depth_recurrence:physical_layers:{args.num_layers} recurrence_steps:{args.recurrence_steps} "
-        f"effective_layers:{args.num_layers * args.recurrence_steps}"
+        f"effective_layers:{(2 + (args.num_layers - 4) * args.recurrence_steps + 2)}"
     )
     log0(
         f"tie_embeddings:{args.tie_embeddings} embed_lr:{token_lr} "

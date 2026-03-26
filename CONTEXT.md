@@ -77,6 +77,28 @@ Small sliding-window note:
 - final_int8_zlib_roundtrip val_loss:2.5607 val_bpb:1.5166 eval_time:1350230ms
 - final_int8_zlib_roundtrip_exact val_loss:2.56067544 val_bpb:1.51658024
 
+## Test 2 (Latest Experiment)
+
+Reported metrics:
+
+- peak memory allocated: 17338 MiB reserved: 17808 MiB
+- Serialized model: 74546117 bytes
+- Code size: 49921 bytes
+- Total submission size: 74596038 bytes
+- Serialized model int8+zlib: 13823595 bytes (payload:19003616 raw_torch:19039445 payload_ratio:3.92x)
+- Total submission size int8+zlib: 13873516 bytes
+- final_int8_zlib_roundtrip val_loss:2.2505 val_bpb:1.3329 eval_time:18902ms
+- final_int8_zlib_roundtrip_exact val_loss:2.25047898 val_bpb:1.3328604
+
+Cap status:
+
+- Under 16,000,000-byte cap by 2126484 bytes (~2.13 MB)
+
+Quick delta vs Test 1:
+
+- val_bpb: 1.35222654 -> 1.3328604 (improved by 0.01936614)
+- int8+zlib total size: 11262432 -> 13873516 (larger by 2611084 bytes, ~2.61 MB)
+
 ## Test 1 (Current Model)
 
 Reported metrics:
