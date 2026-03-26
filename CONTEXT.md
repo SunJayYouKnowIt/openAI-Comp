@@ -169,4 +169,48 @@ Important: These are NOT my models; they are competitor submissions from reposit
 ## Useful Log Snippets
 - 
 - 
-- 
+-
+
+# 5 Phases
+
+## Phase 1: Model Documentation
+
+### Model 1
+- **Layers:** 10 transformer blocks (prelude/recurring pattern)
+- **Key Changes:** Recurrence: blocks 0-2, 4-6, 8-9 prelude; 3, 7 recurring (repeat RECURRENCE_STEPS, gated residual)
+- **MLP:** hidden = dim * 2
+- **Value_bpb/Size:**
+  - `val_bpb: `
+  - `int8+zlib size: `
+
+### Model 2
+- **Layers:** 9 transformer blocks
+- **Key Changes:** Curriculum learning (dynamic sequence length), no recurrence
+- **MLP:** hidden = dim * 2
+- **Value_bpb/Size:**
+  - `val_bpb: `
+  - `int8+zlib size: 
+
+### Model 3
+- **Layers:** 10 transformer blocks (prelude/recurring pattern)
+- **Key Changes:** Recurrence: blocks 0-2, 4-6, 8-9 prelude; 3, 7 recurring (repeat RECURRENCE_STEPS, gated residual)
+- **MLP:** hidden = dim * 2
+- **Value_bpb/Size:**
+  - `val_bpb: [fill in after run]`
+  - `int8+zlib size: [fill in after run]`
+
+### Model 4
+- **Layers:** [custom, see file]
+- **Key Changes:** Advanced attention (flash_attn), zstandard compression, other custom modules
+- **MLP:** [see file]
+- **Value_bpb/Size:**
+  - `val_bpb: [fill in after run]`
+  - `int8+zlib size: [fill in after run]`
+
+### Model 5
+- **Layers:** 9 transformer blocks
+- **Key Changes:** MLP hidden multiplier changed to 2.5 (hidden = int(dim * 2.5))
+- **MLP:** hidden = int(dim * 2.5)
+- **Value_bpb/Size:**
+  - `val_bpb: [fill in after run]`
+  - `int8+zlib size: [fill in after run]`
