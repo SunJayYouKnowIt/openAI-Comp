@@ -56,6 +56,10 @@ class Hyperparameters:
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
     train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
+    curriculum_enabled = bool(int(os.environ.get("CURRICULUM_ENABLED", "0")))
+    curriculum_start_seq_len = int(os.environ.get("CURRICULUM_START_SEQ_LEN", 256))
+    curriculum_final_seq_len = int(os.environ.get("CURRICULUM_FINAL_SEQ_LEN", 1024))
+    curriculum_warmup_frac = float(os.environ.get("CURRICULUM_WARMUP_FRAC", 0.3))
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
 
@@ -968,6 +972,34 @@ def main() -> None:
 
     max_wallclock_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
 
+    def current_train_seq_len(step: int, elapsed_ms: float) -> int:
+        if not args.curriculum_enabled:
+            return args.train_seq_len
+        warmup_frac = min(max(args.curriculum_warmup_frac, 0.0), 1.0)
+        progress = (
+            elapsed_ms / max(max_wallclock_ms, 1e-9)
+            if max_wallclock_ms is not None
+            else step / max(args.iterations, 1)
+        )
+        progress = min(max(progress, 0.0), 1.0)
+        if warmup_frac <= 0.0 or progress >= warmup_frac:
+            target_seq_len = float(args.curriculum_final_seq_len)
+        else:
+            alpha = progress / warmup_frac
+            target_seq_len = (1.0 - alpha) * args.curriculum_start_seq_len + alpha * args.curriculum_final_seq_len
+        low = min(args.curriculum_start_seq_len, args.curriculum_final_seq_len)
+        high = max(args.curriculum_start_seq_len, args.curriculum_final_seq_len)
+        candidates: list[int] = []
+        p = 1
+        while p < low:
+            p <<= 1
+        while p <= high:
+            candidates.append(p)
+            p <<= 1
+        if not candidates:
+            candidates = [args.train_seq_len]
+        return min(candidates, key=lambda s: abs(s - target_seq_len))
+
     def lr_mul(step: int, elapsed_ms: float) -> float:
         if args.warmdown_iters <= 0:
             return 1.0
@@ -1053,12 +1085,13 @@ def main() -> None:
 
         elapsed_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         scale = lr_mul(step, elapsed_ms)
+        train_seq_len = current_train_seq_len(step, elapsed_ms)
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
             if distributed:
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
-            x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+            x, y = train_loader.next_batch(args.train_batch_tokens, train_seq_len, grad_accum_steps)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 loss = model(x, y)
             train_loss += loss.detach()
