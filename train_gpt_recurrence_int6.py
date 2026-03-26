@@ -66,17 +66,18 @@ class Hyperparameters:
 
     # Model shape.
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
-    num_layers = int(os.environ.get("NUM_LAYERS", 13))
+    num_layers = int(os.environ.get("NUM_LAYERS", 10))
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 8))
     model_dim = int(os.environ.get("MODEL_DIM", 512))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
-    mlp_mult = int(os.environ.get("MLP_MULT", 4))
+    mlp_mult = int(os.environ.get("MLP_MULT", 2))
     recurrence_steps = int(os.environ.get("RECURRENCE_STEPS", 3))
     use_smeargate = bool(int(os.environ.get("USE_SMEARGATE", "1")))
     smeargate_init = float(os.environ.get("SMEARGATE_INIT", 3.0))
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
+    attention_window_schedule = os.environ.get("ATTENTION_WINDOW_SCHEDULE", "progressive")
 
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
@@ -567,6 +568,7 @@ class CausalSelfAttention(nn.Module):
         num_kv_heads: int,
         rope_base: float,
         qk_gain_init: float,
+        window_size: int | None = None,
     ):
         super().__init__()
         if dim % num_heads != 0:
@@ -586,6 +588,7 @@ class CausalSelfAttention(nn.Module):
         self.proj._zero_init = True
         self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
         self.rotary = Rotary(self.head_dim, base=rope_base)
+        self.window_size = window_size
 
     def forward(self, x: Tensor) -> Tensor:
         bsz, seqlen, dim = x.shape
@@ -598,12 +601,20 @@ class CausalSelfAttention(nn.Module):
         q = apply_rotary_emb(q, cos, sin)
         k = apply_rotary_emb(k, cos, sin)
         q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
+        if self.window_size is None or not self.training:
+            attn_mask = None
+            is_causal = True
+        else:
+            pos = torch.arange(seqlen, device=x.device)
+            rel = pos[:, None] - pos[None, :]
+            attn_mask = (rel >= 0) & (rel < self.window_size)
+            is_causal = False
         y = F.scaled_dot_product_attention(
             q,
             k,
             v,
-            attn_mask=None,
-            is_causal=True,
+            attn_mask=attn_mask,
+            is_causal=is_causal,
             enable_gqa=(self.num_kv_heads != self.num_heads),
         )
         y = y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim)
@@ -633,11 +644,12 @@ class Block(nn.Module):
         mlp_mult: int,
         rope_base: float,
         qk_gain_init: float,
+        window_size: int | None = None,
     ):
         super().__init__()
         self.attn_norm = RMSNorm()
         self.mlp_norm = RMSNorm()
-        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
+        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init, window_size=window_size)
         self.mlp = MLP(dim, mlp_mult)
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
@@ -681,14 +693,12 @@ class GPT(nn.Module):
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
+        attention_window_schedule: str,
+
     ):
         super().__init__()
         if logit_softcap <= 0.0:
             raise ValueError(f"logit_softcap must be positive, got {logit_softcap}")
-        if num_layers != 13:
-            raise ValueError(f"prelude-loop-coda architecture requires NUM_LAYERS=13, got {num_layers}")
-        if recurrence_steps <= 0:
-            raise ValueError(f"recurrence_steps must be positive, got {recurrence_steps}")
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
@@ -696,14 +706,26 @@ class GPT(nn.Module):
         self.use_smeargate = use_smeargate
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.smeargate = SmearGate(model_dim, init=smeargate_init) if self.use_smeargate else None
-        self.num_prelude_layers = 2
-        self.num_loop_layers = 9
-        self.num_coda_layers = 2
+        self.num_prelude_layers = 9
+        self.num_loop_layers = 1
+        self.num_coda_layers = 0
         self.loop_start = self.num_prelude_layers
         self.coda_start = self.loop_start + self.num_loop_layers
         self.num_skip_weights = self.num_coda_layers
         self.skip_weights = nn.Parameter(torch.ones(self.num_skip_weights, model_dim, dtype=torch.float32))
         self.recurrence_gates = nn.Parameter(torch.zeros(self.recurrence_steps, model_dim, dtype=torch.float32))
+        one_third = num_layers // 3
+        two_thirds = (2 * num_layers) // 3
+
+        def layer_window_size(layer_idx: int) -> int | None:
+            if attention_window_schedule != "progressive":
+                return None
+            if layer_idx < one_third:
+                return 128
+            if layer_idx < two_thirds:
+                return 512
+            return None
+
         self.blocks = nn.ModuleList(
             [
                 Block(
@@ -713,6 +735,7 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
+                    window_size=layer_window_size(i),
                 )
                 for i in range(num_layers)
             ]
@@ -722,6 +745,7 @@ class GPT(nn.Module):
         if self.lm_head is not None:
             self.lm_head._zero_init = True
         self._init_weights()
+
 
     def _init_weights(self) -> None:
         if self.tie_embeddings:
@@ -883,6 +907,7 @@ def main() -> None:
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
+        attention_window_schedule=args.attention_window_schedule,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -947,7 +972,7 @@ def main() -> None:
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
     log0(
         f"depth_recurrence:physical_layers:{args.num_layers} recurrence_steps:{args.recurrence_steps} "
-        f"effective_layers:{(2 + (args.num_layers - 4) * args.recurrence_steps + 2)}"
+        f"effective_layers:{(9 + 1 * args.recurrence_steps + 0)}"
     )
     log0(
         f"tie_embeddings:{args.tie_embeddings} embed_lr:{token_lr} "
