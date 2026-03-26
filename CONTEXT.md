@@ -77,6 +77,34 @@ Small sliding-window note:
 - final_int8_zlib_roundtrip val_loss:2.5607 val_bpb:1.5166 eval_time:1350230ms
 - final_int8_zlib_roundtrip_exact val_loss:2.56067544 val_bpb:1.51658024
 
+## Test 1 (Current Model)
+
+Reported metrics:
+
+- Serialized model: 59861636 bytes
+- Code size: 48927 bytes
+- Total submission size: 59910563 bytes
+- Serialized model int8+zlib: 11213505 bytes (payload:15322336 raw_torch:15357847 payload_ratio:3.91x)
+- Total submission size int8+zlib: 11262432 bytes
+- final_int8_zlib_roundtrip val_loss:2.2832 val_bpb:1.3522 eval_time:13028ms
+- final_int8_zlib_roundtrip_exact val_loss:2.28317788 val_bpb:1.35222654
+
+Cap status:
+
+- Under 16,000,000-byte cap by 4737568 bytes (~4.74 MB)
+
+Architecture delta from prior 6x3 run:
+
+- Prior setup: 6 unique layers, recurrence_steps=3 (effective passes=18), standard recurrent full-stack pass
+- Current setup: 7 unique layers with prelude-loop-coda (2 prelude, 3 shared loop repeated 2x, 2 coda), recurrence_steps=2 (effective passes=11)
+- Attention KV heads: num_kv_heads changed 4 -> 8
+- Attention heads unchanged: num_heads remains 8
+
+Observed metric delta vs prior 6x3 entry (val_bpb 1.34753386, size 12815786):
+
+- val_bpb: 1.34753386 -> 1.35222654 (higher/worse by 0.00469268)
+- int8+zlib total size: 12815786 -> 11262432 (smaller by 1553354 bytes, ~1.55 MB)
+
 ## Previous Log Summary
 Important: These are NOT my models; they are competitor submissions from repository logs and are used only for reference.
 

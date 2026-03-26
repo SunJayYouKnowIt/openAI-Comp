@@ -65,8 +65,10 @@ class Hyperparameters:
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 8))
     model_dim = int(os.environ.get("MODEL_DIM", 512))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
-    mlp_mult = int(os.environ.get("MLP_MULT", 2))
-    recurrence_steps = int(os.environ.get("RECURRENCE_STEPS", 2))
+    mlp_mult = int(os.environ.get("MLP_MULT", 3))
+    recurrence_steps = int(os.environ.get("RECURRENCE_STEPS", 3))
+    use_smeargate = bool(int(os.environ.get("USE_SMEARGATE", "1")))
+    smeargate_init = float(os.environ.get("SMEARGATE_INIT", 3.0))
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
@@ -289,7 +291,7 @@ CONTROL_TENSOR_NAME_PATTERNS = tuple(
     pattern
     for pattern in os.environ.get(
         "CONTROL_TENSOR_NAME_PATTERNS",
-        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights,recurrence_gate,recurrence_gates",
+        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights,recurrence_gate,recurrence_gates,smeargate",
     ).split(",")
     if pattern
 )
@@ -645,6 +647,18 @@ class Block(nn.Module):
         return x
 
 
+class SmearGate(nn.Module):
+    # Blends current token embedding with previous token embedding.
+    def __init__(self, dim: int, init: float):
+        super().__init__()
+        self.gate = nn.Parameter(torch.full((dim,), init, dtype=torch.float32))
+
+    def forward(self, x: Tensor) -> Tensor:
+        gate = torch.sigmoid(self.gate).to(dtype=x.dtype)[None, None, :]
+        prev = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1]], dim=1)
+        return gate * x + (1.0 - gate) * prev
+
+
 class GPT(nn.Module):
     def __init__(
         self,
@@ -655,6 +669,8 @@ class GPT(nn.Module):
         num_kv_heads: int,
         mlp_mult: int,
         recurrence_steps: int,
+        use_smeargate: bool,
+        smeargate_init: float,
         tie_embeddings: bool,
         tied_embed_init_std: float,
         logit_softcap: float,
@@ -672,7 +688,9 @@ class GPT(nn.Module):
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
         self.recurrence_steps = recurrence_steps
+        self.use_smeargate = use_smeargate
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
+        self.smeargate = SmearGate(model_dim, init=smeargate_init) if self.use_smeargate else None
         self.num_prelude_layers = 2
         self.num_loop_layers = 3
         self.num_coda_layers = 2
@@ -710,6 +728,8 @@ class GPT(nn.Module):
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         x = self.tok_emb(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
+        if self.smeargate is not None:
+            x = self.smeargate(x)
         x0 = x
 
         # Prelude: unique layers run once.
@@ -851,6 +871,8 @@ def main() -> None:
         num_kv_heads=args.num_kv_heads,
         mlp_mult=args.mlp_mult,
         recurrence_steps=args.recurrence_steps,
+        use_smeargate=args.use_smeargate,
+        smeargate_init=args.smeargate_init,
         tie_embeddings=args.tie_embeddings,
         tied_embed_init_std=args.tied_embed_init_std,
         logit_softcap=args.logit_softcap,
