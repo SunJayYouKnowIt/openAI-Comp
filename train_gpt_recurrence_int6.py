@@ -649,7 +649,7 @@ class Block(nn.Module):
         super().__init__()
         self.attn_norm = RMSNorm()
         self.mlp_norm = RMSNorm()
-        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init, window_size=window_size)
+        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init, window_size=None)
         self.mlp = MLP(dim, mlp_mult)
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
@@ -717,7 +717,7 @@ class GPT(nn.Module):
         one_third = num_layers // 3
         two_thirds = (2 * num_layers) // 3
 
-        def layer_window_size(layer_idx: int) -> int | None:
+        def layer_window_size(layer_idx: int) -> None:
             if attention_window_schedule != "progressive":
                 return None
             if layer_idx < one_third:
@@ -735,7 +735,7 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
-                    window_size=layer_window_size(i),
+                    window_size=None,
                 )
                 for i in range(num_layers)
             ]
