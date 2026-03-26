@@ -66,7 +66,7 @@ class Hyperparameters:
     model_dim = int(os.environ.get("MODEL_DIM", 512))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
     mlp_mult = int(os.environ.get("MLP_MULT", 4))
-    recurrence_steps = int(os.environ.get("RECURRENCE_STEPS", 2))
+    recurrence_steps = int(os.environ.get("RECURRENCE_STEPS", 3))
     use_smeargate = bool(int(os.environ.get("USE_SMEARGATE", "1")))
     smeargate_init = float(os.environ.get("SMEARGATE_INIT", 3.0))
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
