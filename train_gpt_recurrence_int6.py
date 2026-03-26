@@ -774,6 +774,10 @@ class GPT(nn.Module):
                 x = x + gate[None, None, :] * x0
             for i in range(self.loop_start, self.coda_start):
                 x = self.blocks[i](x, x0)
+        
+        # Second pass on selected layers
+        for i in [3, 5, 9]:
+            x = self.blocks[i](x, x0)
 
         # Coda: unique layers run once, consuming skip connections.
         for i in range(self.num_coda_layers):
